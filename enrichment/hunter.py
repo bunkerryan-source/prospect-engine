@@ -12,22 +12,26 @@ from typing import Optional
 import requests
 
 from models import ProspectRecord
+from utils.domain_filter import is_blocked_domain
 
 logger = logging.getLogger(__name__)
 
-# Keywords used to identify relevant contacts
-_TARGET_KEYWORDS = [
+# Keywords used to identify relevant contacts — split into priority tiers
+_PRIORITY_1_KEYWORDS = [
     "logistics",
     "supply chain",
     "transportation",
     "shipping",
     "distribution",
+    "freight",
+]
+_PRIORITY_2_KEYWORDS = [
     "operations",
-    "procurement",
-    "warehouse",
-    "plant manager",
-    "fulfillment",
     "coo",
+    "vp operations",
+    "general manager",
+    "plant manager",
+    "director of operations",
 ]
 
 _HUNTER_BASE = "https://api.hunter.io/v2"
@@ -56,13 +60,22 @@ class HunterEnrichment:
         max_searches = hunter_cfg.get("max_searches_per_run", 100)
 
         # Split into candidates and untouched
+        # Gate: skip noise/directory/media domains — don't waste credits
         candidates = []
         untouched = []
+        skipped_noise = 0
         for p in prospects:
             if p.website and not p.contact_email and p.contact_source != "apollo":
-                candidates.append(p)
+                if is_blocked_domain(p.website):
+                    skipped_noise += 1
+                    untouched.append(p)
+                else:
+                    candidates.append(p)
             else:
                 untouched.append(p)
+
+        if skipped_noise:
+            logger.info("Hunter: skipped %d noise domains", skipped_noise)
 
         enriched: list[ProspectRecord] = []
         searches_done = 0
@@ -170,11 +183,10 @@ class HunterEnrichment:
         emails: list[dict] = data.get("emails", [])
         pattern: Optional[str] = data.get("pattern")
 
-        # Filter to relevant contacts
-        matches = [e for e in emails if _is_target_contact(e)]
-
-        if matches:
-            best = max(matches, key=lambda e: e.get("confidence", 0))
+        # Priority 1: logistics titles
+        p1_matches = [e for e in emails if _is_priority1_contact(e)]
+        if p1_matches:
+            best = max(p1_matches, key=lambda e: e.get("confidence", 0))
             first = best.get("first_name", "")
             last = best.get("last_name", "")
             return dataclasses.replace(
@@ -186,8 +198,23 @@ class HunterEnrichment:
                 contact_source="hunter",
             )
 
-        if not emails and pattern:
-            # No emails at all but pattern exists
+        # Priority 2: operations titles
+        p2_matches = [e for e in emails if _is_priority2_contact(e)]
+        if p2_matches:
+            best = max(p2_matches, key=lambda e: e.get("confidence", 0))
+            first = best.get("first_name", "")
+            last = best.get("last_name", "")
+            return dataclasses.replace(
+                prospect,
+                contact_name=f"{first} {last}".strip(),
+                contact_title=best.get("position", ""),
+                contact_email=best.get("value", ""),
+                email_confidence=best.get("confidence"),
+                contact_source="hunter",
+            )
+
+        # No match — only save pattern if available, do NOT return random contacts
+        if pattern:
             readable_pattern = pattern.replace("{first}", "{first}").replace("{last}", "{last}")
             note = f"Hunter email pattern: {readable_pattern}@{domain}"
             existing_notes = prospect.notes or ""
@@ -207,14 +234,27 @@ class HunterEnrichment:
 # Module-level helpers
 # ------------------------------------------------------------------
 
-def _is_target_contact(email_entry: dict) -> bool:
-    """Return True if position or department matches target keywords."""
+def _is_priority1_contact(email_entry: dict) -> bool:
+    """Return True if position matches logistics/supply-chain keywords."""
     position = (email_entry.get("position") or "").lower()
-    department = (email_entry.get("department") or "").lower()
-    for kw in _TARGET_KEYWORDS:
-        if kw in position or kw in department:
+    for kw in _PRIORITY_1_KEYWORDS:
+        if kw in position:
             return True
     return False
+
+
+def _is_priority2_contact(email_entry: dict) -> bool:
+    """Return True if position matches operations keywords."""
+    position = (email_entry.get("position") or "").lower()
+    for kw in _PRIORITY_2_KEYWORDS:
+        if kw in position:
+            return True
+    return False
+
+
+def _is_target_contact(email_entry: dict) -> bool:
+    """Return True if position matches logistics or operations keywords."""
+    return _is_priority1_contact(email_entry) or _is_priority2_contact(email_entry)
 
 
 def _extract_domain(website: str) -> str:

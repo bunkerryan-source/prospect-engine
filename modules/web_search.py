@@ -1,37 +1,42 @@
 """
-Task 7: Web Search scraper module.
+Web Search scraper module — with inline SQEP signal detection.
 
-Searches for prospects using per-state keyword queries and global SQEP product
-signal queries. Produces ProspectRecords filtered against known noise domains.
+Searches for prospects using per-state keyword queries. SQEP/compliance
+signal detection is applied to ALL results as a post-processing step
+(no longer a separate module with its own searches).
+
+Company names are extracted via heuristic title parsing with domain-based
+fallback. Noise domains are filtered using centralized suffix matching.
 """
 
 import re
 from models import ProspectRecord, normalize_domain
 from modules.base import BaseModule
-
-_FILTERED_DOMAINS = {
-    "google.com",
-    "youtube.com",
-    "wikipedia.org",
-    "linkedin.com",
-    "facebook.com",
-    "yelp.com",
-    "indeed.com",
-    "glassdoor.com",
-    "amazon.com",
-    "pinterest.com",
-    "twitter.com",
-    "instagram.com",
-}
-
-# Separators used to split page titles into segments
-_TITLE_SEPARATORS = re.compile(r"\s*[|\-\u2014]\s*")
+from utils.domain_filter import is_blocked_domain, extract_company_from_title
 
 
-def _extract_company_name(title: str) -> str:
-    """Return the first meaningful segment of a page title."""
-    parts = _TITLE_SEPARATORS.split(title)
-    return parts[0].strip() if parts else title.strip()
+# ---------------------------------------------------------------------------
+# SQEP signal detection (merged from former sqep.py)
+# ---------------------------------------------------------------------------
+
+def _detect_signals(title: str, snippet: str) -> list[str]:
+    """Return compliance signal keys found in combined title + snippet text."""
+    text = (title + " " + snippet).lower()
+    signals: list[str] = []
+
+    if "sqep" in text:
+        signals.append("sqep_mentioned")
+
+    if "otif" in text:
+        signals.append("otif_mentioned")
+
+    if "walmart" in text and ("supplier" in text or "vendor" in text):
+        signals.append("walmart_supplier")
+
+    if any(word in text for word in ("chargeback", "fine", "penalty", "deduction")):
+        signals.append("compliance_pain")
+
+    return signals
 
 
 class WebSearchModule(BaseModule):
@@ -51,10 +56,9 @@ class WebSearchModule(BaseModule):
 
         for vertical_name, vertical_cfg in verticals.items():
             keywords: list[str] = vertical_cfg.get("keywords", [])
-            signals: list[str] = vertical_cfg.get("sqep_product_signals", [])
 
-            # Strategy 1: top-3 keywords × states
-            for keyword in keywords[:3]:
+            # Strategy: keywords × states (keywords already trimmed to 2 in config)
+            for keyword in keywords:
                 for state in self.states:
                     query = f"{keyword} {state}"
                     self.log(f"Searching: {query}")
@@ -67,19 +71,6 @@ class WebSearchModule(BaseModule):
                                 seen_domains.add(key)
                                 records.append(record)
 
-            # Strategy 2: SQEP product signals globally
-            for signal in signals:
-                query = f'Walmart supplier "{signal}" manufacturer'
-                self.log(f"Searching: {query}")
-                results = self.search_client.search(query)
-                for item in results:
-                    record = self._make_record(item, vertical_name)
-                    if record:
-                        key = record.website
-                        if key not in seen_domains:
-                            seen_domains.add(key)
-                            records.append(record)
-
         return records
 
     def _make_record(self, item: dict, vertical_name: str) -> ProspectRecord | None:
@@ -89,15 +80,22 @@ class WebSearchModule(BaseModule):
         snippet = item.get("snippet", "")
 
         domain = normalize_domain(url)
-        if not domain or domain in _FILTERED_DOMAINS:
+
+        # Reject noise domains using centralized suffix matcher
+        if not domain or is_blocked_domain(domain):
             return None
 
-        company_name = _extract_company_name(title) or domain
+        # Extract company name with smart fallback
+        company_name = extract_company_from_title(title, domain)
+
+        # Detect SQEP/compliance signals inline
+        signals = _detect_signals(title, snippet)
 
         return ProspectRecord(
             company_name=company_name,
             website=domain,
             vertical=vertical_name,
             source_channel="web_search",
+            compliance_signals=", ".join(signals) if signals else "",
             notes=snippet,
         )

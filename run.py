@@ -5,6 +5,7 @@ Prospect Engine CLI — argument parsing, database commands, and pipeline orches
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import os
 import sys
 import time
@@ -261,6 +262,10 @@ def run_pipeline(
     # 1. Load config
     config = load_config(config_path)
 
+    # 1.5 Load user-configured blocked domains
+    from utils.domain_filter import load_user_blocked_domains
+    load_user_blocked_domains(config)
+
     # 2. Check API keys
     keys = check_api_keys()
 
@@ -409,6 +414,18 @@ def run_pipeline(
 
     dedup_count = len(all_prospects)
 
+    # 14.5 Extract states from snippets for prospects missing state
+    from utils.domain_filter import extract_state_from_text
+    state_extracted = 0
+    for i, p in enumerate(all_prospects):
+        if not p.state and p.notes:
+            extracted = extract_state_from_text(p.notes)
+            if extracted:
+                all_prospects[i] = dataclasses.replace(p, state=extracted)
+                state_extracted += 1
+    if state_extracted:
+        print(f"Extracted state from snippets: {state_extracted} prospects")
+
     # 15. Hunter enrichment
     hunter_search_credits = 0
     if not skip_enrichment and keys.get("hunter"):
@@ -468,24 +485,38 @@ def run_pipeline(
         hunter_search=hunter_search_credits,
     )
 
-    # 19. Export
+    # 19. Export — include state list label in filename so same-day runs
+    #     for different regions don't overwrite each other.
     run_date = date.today().isoformat()
     output_dir = config.get("output", {}).get("directory", "output")
     os.makedirs(output_dir, exist_ok=True)
     prefix = config.get("output", {}).get("filename_prefix", "prospects")
     formats = config.get("output", {}).get("formats", ["xlsx", "csv"])
 
+    # Build state label: "south_central", "south_central+southeast", or "nationwide"
+    if nationwide:
+        state_label = "nationwide"
+    elif states_arg:
+        state_label = states_arg.replace(",", "+").strip()
+    else:
+        # Find the default list name
+        state_label = "default"
+        for list_name, list_cfg in config.get("state_lists", {}).items():
+            if list_cfg.get("default"):
+                state_label = list_name
+                break
+
     all_db_prospects = db.get_prospects_for_export()
     run_history = db.get_run_history()
     pipeline_stats = db.get_pipeline_stats()
 
     if "xlsx" in formats:
-        xlsx_path = os.path.join(output_dir, f"{prefix}_{run_date}.xlsx")
+        xlsx_path = os.path.join(output_dir, f"{prefix}_{state_label}_{run_date}.xlsx")
         export_xlsx(xlsx_path, all_db_prospects, run_history, pipeline_stats, run_date)
         print(f"Exported: {xlsx_path}")
 
     if "csv" in formats:
-        csv_path = os.path.join(output_dir, f"{prefix}_{run_date}.csv")
+        csv_path = os.path.join(output_dir, f"{prefix}_{state_label}_{run_date}.csv")
         export_csv(csv_path, all_db_prospects)
         print(f"Exported: {csv_path}")
 

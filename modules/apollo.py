@@ -39,6 +39,10 @@ class ApolloModule(BaseModule):
     def __init__(self, config: dict, states: list[str], api_key: str):
         super().__init__(config, states)
         self.api_key = api_key
+        self._headers = {
+            "X-Api-Key": api_key,
+            "Content-Type": "application/json",
+        }
         self.company_search_credits = 0
         self.people_search_credits = 0
 
@@ -75,9 +79,15 @@ class ApolloModule(BaseModule):
                         break
 
                     for company in companies:
-                        # ICP revenue filtering
-                        revenue_str = company.get("annual_revenue_printed")
-                        estimated_revenue = self._parse_revenue(revenue_str)
+                        # ICP revenue filtering — Apollo uses organization_revenue (float)
+                        # and organization_revenue_printed (e.g. "8M")
+                        estimated_revenue = None
+                        raw_revenue = company.get("organization_revenue")
+                        if raw_revenue is not None:
+                            estimated_revenue = int(raw_revenue)
+                        else:
+                            revenue_str = company.get("organization_revenue_printed")
+                            estimated_revenue = self._parse_revenue(revenue_str)
 
                         if estimated_revenue is not None:
                             if revenue_min is not None and estimated_revenue < revenue_min:
@@ -86,15 +96,17 @@ class ApolloModule(BaseModule):
                                 continue
 
                         # Extract company fields
+                        # Note: mixed_companies/search does NOT return city/state/employee_count
+                        # directly. Phone and name are available.
                         company_id = company.get("id", "")
                         name = company.get("name", "") or ""
-                        city = company.get("city", "") or ""
-                        state = company.get("state", "") or ""
-                        phone = company.get("phone", "") or ""
+                        phone = company.get("phone", "") or company.get("sanitized_phone", "") or ""
+
+                        # Skip non-US companies (foreign phone numbers)
+                        if phone and not phone.startswith("+1") and phone.startswith("+"):
+                            continue
                         primary_domain = company.get("primary_domain", "") or ""
                         website = normalize_domain(primary_domain) if primary_domain else ""
-                        emp_count = company.get("estimated_num_employees")
-                        industry = company.get("industry", "") or ""
                         kw_list = company.get("keywords") or []
                         product_keywords = ", ".join(kw_list) if isinstance(kw_list, list) else str(kw_list)
 
@@ -119,13 +131,10 @@ class ApolloModule(BaseModule):
 
                         record = ProspectRecord(
                             company_name=name or website,
-                            city=city,
-                            state=state,
                             phone=phone,
                             website=website,
                             vertical=vertical_name,
                             source_channel="apollo",
-                            estimated_employees=emp_count,
                             estimated_revenue=estimated_revenue,
                             product_keywords=product_keywords,
                             contact_name=contact_name,
@@ -148,11 +157,16 @@ class ApolloModule(BaseModule):
     # ------------------------------------------------------------------
 
     def _search_companies(self, keyword: str, employee_range: str | None, page: int) -> list | None:
-        """POST to Apollo mixed_companies/search. Returns list of org dicts or None on error."""
+        """POST to Apollo mixed_companies/search. Returns list of org dicts or None on error.
+
+        Auth: API key passed via X-Api-Key header (required by Apollo since 2024).
+        Location: Not filtered by state — Apollo's location filter is too strict
+        for niche verticals and returns zero results. We search globally with
+        employee-range filtering, then let the domain_filter and geo scoring
+        handle US-only targeting.
+        """
         payload: dict = {
-            "api_key": self.api_key,
             "q_organization_keyword_tags": [keyword],
-            "organization_locations": self.states,
             "per_page": 25,
             "page": page,
         }
@@ -163,28 +177,42 @@ class ApolloModule(BaseModule):
             response = requests.post(
                 "https://api.apollo.io/api/v1/mixed_companies/search",
                 json=payload,
+                headers=self._headers,
             )
             response.raise_for_status()
             self.company_search_credits += 1
             data = response.json()
-            return data.get("organizations", [])
+            orgs = data.get("organizations", [])
+
+            # Filter out non-US domains (international TLDs)
+            from utils.domain_filter import is_blocked_domain
+            us_orgs = []
+            for org in orgs:
+                domain = org.get("primary_domain", "") or ""
+                if domain and not is_blocked_domain(domain):
+                    us_orgs.append(org)
+
+            return us_orgs
         except Exception as exc:
             logger.error("Apollo company search failed for keyword '%s' page %d: %s", keyword, page, exc)
             return None
 
     def _search_people(self, company_apollo_id: str) -> list | None:
-        """POST to Apollo mixed_people/search. Returns list of people dicts or None on error."""
+        """POST to Apollo mixed_people/api_search (new endpoint as of 2024).
+
+        The old mixed_people/search endpoint is deprecated for API callers.
+        """
         payload = {
-            "api_key": self.api_key,
-            "q_organization_id": company_apollo_id,
+            "organization_ids": [company_apollo_id],
             "person_titles": _PEOPLE_SEARCH_TITLES,
             "per_page": 3,
             "page": 1,
         }
         try:
             response = requests.post(
-                "https://api.apollo.io/api/v1/mixed_people/search",
+                "https://api.apollo.io/api/v1/mixed_people/api_search",
                 json=payload,
+                headers=self._headers,
             )
             response.raise_for_status()
             self.people_search_credits += 1

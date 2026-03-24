@@ -39,29 +39,23 @@ def estimate_credits(
     serpapi_estimated = 0
 
     if "web_search" in active_channels:
-        # One search per (vertical × state × ~3 keyword groups) +
-        # one search per sqep_product_signal per active vertical
-        web_search_credits = len(active_verticals) * len(active_states) * 3
-        sqep_signals_credits = sum(
-            len(verticals_cfg.get(v, {}).get("sqep_product_signals", []))
-            for v in active_verticals
-        )
-        serpapi_estimated += web_search_credits + sqep_signals_credits
+        # keywords per vertical × states (keywords trimmed to 2 in config)
+        for v in active_verticals:
+            num_keywords = len(verticals_cfg.get(v, {}).get("keywords", []))
+            web_search_credits = num_keywords * len(active_states)
+            serpapi_estimated += web_search_credits
 
     if "sqep" in active_channels:
+        # Just the global SQEP search terms (no per-vertical × per-state)
         sqep_search_terms: list = config.get("sqep_search_terms", [])
-        sqep_credits = len(sqep_search_terms)
-        sqep_signals_by_state = sum(
-            len(verticals_cfg.get(v, {}).get("sqep_product_signals", []))
-            for v in active_verticals
-        ) * len(active_states)
-        serpapi_estimated += sqep_credits + sqep_signals_by_state
+        serpapi_estimated += len(sqep_search_terms)
 
     if "import_search" in active_channels:
+        # 1 importyeti search + 1 general search per keyword per vertical
         import_keywords: dict = config.get("import_keywords", {})
         import_credits = sum(
             len(import_keywords.get(v, [])) for v in active_verticals
-        ) * 2
+        ) * 2  # importyeti + general
         serpapi_estimated += import_credits
 
     # ---- Apollo estimates -------------------------------------------------

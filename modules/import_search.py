@@ -1,26 +1,26 @@
 """
-Task 9: Import/export data search module.
+Import/export data search module.
 
 Searches ImportYeti and general web for importers/manufacturers using
-per-vertical import keywords. Produces ProspectRecords with import_products set.
+per-vertical import keywords. Uses centralized domain filtering.
+
+TRIMMED: Only 1 keyword per vertical, and general importer search runs
+WITHOUT per-state iteration (just 1 general search per keyword).
+ImportYeti site: search stays as-is.
 """
 
 import re
 from models import ProspectRecord, normalize_domain
 from modules.base import BaseModule
-
-_TITLE_SEPARATORS = re.compile(r"\s*[|\-\u2014]\s*")
+from utils.domain_filter import is_blocked_domain, is_importyeti, extract_company_from_title
 
 _IMPORTYETI_SUFFIX = re.compile(r"\s*-\s*ImportYeti\s*$", re.IGNORECASE)
 
 
-def _extract_company_name(title: str, is_importyeti: bool = False) -> str:
-    """Extract company name from title, stripping ImportYeti suffix when applicable."""
-    if is_importyeti:
-        name = _IMPORTYETI_SUFFIX.sub("", title).strip()
-        return name if name else title.strip()
-    parts = _TITLE_SEPARATORS.split(title)
-    return parts[0].strip() if parts else title.strip()
+def _extract_importyeti_name(title: str) -> str:
+    """Extract company name from an ImportYeti result title."""
+    name = _IMPORTYETI_SUFFIX.sub("", title).strip()
+    return name if name else ""
 
 
 class ImportSearchModule(BaseModule):
@@ -44,45 +44,62 @@ class ImportSearchModule(BaseModule):
             keywords: list[str] = import_keywords_cfg.get(vertical_name, [])
 
             for keyword in keywords:
-                # Strategy 1: ImportYeti site search
+                # Strategy 1: ImportYeti site search (1 query per keyword)
                 query = f'site:importyeti.com "{keyword}"'
                 self.log(f"Searching (ImportYeti): {query}")
                 results = self.search_client.search(query)
                 for item in results:
-                    record = self._make_record(item, keyword)
+                    record = self._make_importyeti_record(item, keyword)
+                    if record:
+                        key = record.website or record.company_name.lower()
+                        if key not in seen_domains:
+                            seen_domains.add(key)
+                            records.append(record)
+
+                # Strategy 2: ONE general importer search (no per-state loop)
+                query = f'"{keyword}" manufacturer importer USA'
+                self.log(f"Searching: {query}")
+                results = self.search_client.search(query)
+                for item in results:
+                    record = self._make_general_record(item, keyword)
                     if record:
                         key = record.website
                         if key not in seen_domains:
                             seen_domains.add(key)
                             records.append(record)
 
-                # Strategy 2: general importer search per state
-                for state in self.states:
-                    query = f'"{keyword}" importer {state} manufacturer'
-                    self.log(f"Searching: {query}")
-                    results = self.search_client.search(query)
-                    for item in results:
-                        record = self._make_record(item, keyword)
-                        if record:
-                            key = record.website
-                            if key not in seen_domains:
-                                seen_domains.add(key)
-                                records.append(record)
-
         return records
 
-    def _make_record(self, item: dict, keyword: str) -> ProspectRecord | None:
-        """Parse a search result into a ProspectRecord."""
+    def _make_importyeti_record(self, item: dict, keyword: str) -> ProspectRecord | None:
+        """Parse an ImportYeti search result. Extract company name from title."""
+        title = item.get("title", "")
+        snippet = item.get("snippet", "")
+
+        company_name = _extract_importyeti_name(title)
+        if not company_name:
+            return None
+
+        # ImportYeti pages don't give us the company's real domain,
+        # so we leave website blank — dedup will use fuzzy name matching,
+        # and Apollo/Hunter can fill in the domain later.
+        return ProspectRecord(
+            company_name=company_name,
+            source_channel="import",
+            import_products=keyword,
+            notes=snippet,
+        )
+
+    def _make_general_record(self, item: dict, keyword: str) -> ProspectRecord | None:
+        """Parse a general web search result for importers."""
         url = item.get("link", "")
         title = item.get("title", "")
         snippet = item.get("snippet", "")
 
         domain = normalize_domain(url)
-        if not domain:
+        if not domain or is_blocked_domain(domain):
             return None
 
-        is_importyeti = "importyeti.com" in domain
-        company_name = _extract_company_name(title, is_importyeti=is_importyeti) or domain
+        company_name = extract_company_from_title(title, domain)
 
         return ProspectRecord(
             company_name=company_name,
