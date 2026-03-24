@@ -17,7 +17,7 @@ def test_normalize_domain():
 
 def test_normalize_company_name():
     assert normalize_company_name("Acme Corporation, Inc.") == "acme corporation"
-    assert normalize_company_name("The  Acme  Group LLC") == "the acme group"
+    assert normalize_company_name("The  Acme  Group LLC") == "the acme"
     assert normalize_company_name("Acme International Holdings") == "acme"
 
 def test_dedup_exact_domain_merge():

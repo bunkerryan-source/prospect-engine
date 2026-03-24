@@ -38,10 +38,7 @@ def normalize_domain(url: str) -> str:
 _LEGAL_SUFFIXES = ["inc", "llc", "ltd", "corp", "company", "co"]
 
 # Organizational descriptor suffixes — stripped after legal suffixes
-# (e.g. "International", "Holdings", "Enterprises")
-# Note: "Corporation", "Group", "Company" are intentionally NOT stripped as
-# they are considered meaningful parts of a proper company name.
-_DESCRIPTOR_SUFFIXES = ["international", "holdings", "enterprises"]
+_DESCRIPTOR_SUFFIXES = ["international", "group", "holdings", "enterprises"]
 
 _LEGAL_PATTERN = re.compile(
     r"[\s,]+(?:" + "|".join(_LEGAL_SUFFIXES) + r")\.?$",
