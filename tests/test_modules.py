@@ -103,3 +103,88 @@ def test_import_search_strips_importyeti_suffix():
     module = ImportSearchModule(config, states=["TX"], search_client=mock_client)
     results = module.run(active_verticals=["food"])
     assert results[0].company_name == "Acme Foods Inc"
+
+
+# ---------------------------------------------------------------------------
+# Apollo module tests
+# ---------------------------------------------------------------------------
+
+from unittest.mock import patch, MagicMock
+from modules.apollo import ApolloModule
+
+def test_apollo_produces_records_with_contacts():
+    config = {
+        "verticals": {"pharma": {"keywords": ["pharmaceutical manufacturer", "CDMO", "drug manufacturer"]}},
+        "icp": {"employee_min": 25, "employee_max": 2000, "revenue_min": 5000000, "revenue_max": 500000000},
+        "apollo": {"per_page": 25, "max_pages_per_search": 1, "plan_limit": 30000}
+    }
+
+    mock_company_response = MagicMock()
+    mock_company_response.status_code = 200
+    mock_company_response.json.return_value = {
+        "organizations": [{
+            "id": "abc123", "name": "Acme Pharma", "city": "Houston", "state": "Texas",
+            "phone": "555-1234", "primary_domain": "acmepharma.com",
+            "estimated_num_employees": 150, "annual_revenue_printed": "$10M-$50M",
+            "industry": "Pharmaceuticals", "keywords": ["pharma", "drug"]
+        }]
+    }
+    mock_company_response.raise_for_status = MagicMock()
+
+    mock_people_response = MagicMock()
+    mock_people_response.status_code = 200
+    mock_people_response.json.return_value = {
+        "people": [{
+            "first_name": "Jane", "last_name": "Doe",
+            "title": "VP of Logistics", "email": "jane@acmepharma.com"
+        }]
+    }
+    mock_people_response.raise_for_status = MagicMock()
+
+    with patch("modules.apollo.requests.post") as mock_post, \
+         patch("modules.apollo.time.sleep"):
+        mock_post.side_effect = [mock_company_response, mock_people_response]
+        module = ApolloModule(config, states=["TX"], api_key="test_key")
+        results = module.run(active_verticals=["pharma"])
+
+    assert len(results) >= 1
+    acme = results[0]
+    assert acme.website == "acmepharma.com"
+    assert acme.contact_name == "Jane Doe"
+    assert acme.contact_title == "VP of Logistics"
+    assert acme.contact_source == "apollo"
+    assert acme.estimated_revenue == 10000000
+    assert acme.source_channel == "apollo"
+
+def test_apollo_filters_revenue_outside_icp():
+    config = {
+        "verticals": {"pharma": {"keywords": ["pharma"]}},
+        "icp": {"employee_min": 25, "employee_max": 2000, "revenue_min": 5000000, "revenue_max": 500000000},
+        "apollo": {"per_page": 25, "max_pages_per_search": 1, "plan_limit": 30000}
+    }
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "organizations": [{
+            "id": "xyz", "name": "Mega Pharma", "primary_domain": "mega.com",
+            "estimated_num_employees": 100, "annual_revenue_printed": "$1B+"
+        }]
+    }
+    mock_response.raise_for_status = MagicMock()
+
+    with patch("modules.apollo.requests.post", return_value=mock_response), \
+         patch("modules.apollo.time.sleep"):
+        module = ApolloModule(config, states=["TX"], api_key="test_key")
+        results = module.run(active_verticals=["pharma"])
+
+    assert len(results) == 0  # $1B+ exceeds $500M max
+
+def test_apollo_parse_revenue():
+    from modules.apollo import ApolloModule
+    assert ApolloModule._parse_revenue("$10M-$50M") == 10000000
+    assert ApolloModule._parse_revenue("$1M-$10M") == 1000000
+    assert ApolloModule._parse_revenue("$100K-$500K") == 100000
+    assert ApolloModule._parse_revenue("$1B+") == 1000000000
+    assert ApolloModule._parse_revenue(None) is None
+    assert ApolloModule._parse_revenue("unknown") is None
