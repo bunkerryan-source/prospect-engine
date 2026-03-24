@@ -1,0 +1,176 @@
+# ============================================================
+# PROSPECT ENGINE CONFIGURATION
+# ============================================================
+
+# --- ICP Firmographic Filters ---
+icp:
+  revenue_min: 5000000
+  revenue_max: 500000000
+  employee_min: 25
+  employee_max: 2000
+
+# --- Named State Lists ---
+state_lists:
+  south_central:
+    default: true
+    states: [TX, LA, AR, OK]
+  southeast:
+    states: [FL, GA, NC, SC, TN, AL, MS]
+  northeast:
+    states: [NJ, NY, PA, CT, MA, MD, VA]
+  midwest:
+    states: [OH, IL, IN, MI, WI, MN, MO, IA]
+  west:
+    states: [CA, WA, OR, AZ, CO, NV, UT]
+
+# --- Verticals ---
+verticals:
+  fragrance:
+    keywords:
+      - fragrance manufacturer
+      - fragrance company
+      - aroma chemical
+      - essential oil manufacturer
+      - perfume compound
+      - candle manufacturer
+      - air freshener manufacturer
+      - scent company
+    naics_codes: ["325611", "325620", "325998"]
+    sqep_product_signals: [candle, air freshener, scented product, home fragrance]
+
+  flavor:
+    keywords:
+      - flavor manufacturer
+      - flavor company
+      - flavor producer
+      - flavoring extract
+      - seasoning manufacturer
+      - food ingredient supplier
+      - natural flavor
+      - flavor house
+    naics_codes: ["311942", "311999"]
+    sqep_product_signals: [seasoning, flavoring, extract, spice]
+
+  food:
+    keywords:
+      - food manufacturer
+      - food producer
+      - food processor
+      - co-packer
+      - contract food manufacturer
+      - snack manufacturer
+      - beverage manufacturer
+      - condiment manufacturer
+    naics_codes: ["3111", "3112", "3113", "3114", "3115", "3116", "3117", "3118", "3119"]
+    sqep_product_signals: [snack, food, beverage, condiment, bakery, frozen, dairy, sauce]
+
+  pharma:
+    keywords:
+      - pharmaceutical manufacturer
+      - pharma company
+      - CDMO
+      - contract drug manufacturer
+      - API manufacturer
+      - OTC manufacturer
+      - drug manufacturer
+      - excipient manufacturer
+    naics_codes: ["325411", "325412", "325413", "325414"]
+    sqep_product_signals: [OTC, over-the-counter, pharmaceutical]
+
+  nutraceutical:
+    keywords:
+      - supplement manufacturer
+      - nutraceutical manufacturer
+      - vitamin manufacturer
+      - dietary supplement producer
+      - protein powder manufacturer
+      - supplement contract manufacturer
+      - probiotic manufacturer
+      - herbal supplement company
+    naics_codes: ["311514", "325411", "325199"]
+    sqep_product_signals: [vitamin, supplement, protein, probiotic, wellness, gummy]
+
+# --- SQEP Search Terms ---
+sqep_search_terms:
+  - "Walmart SQEP supplier"
+  - "Walmart OTIF penalty"
+  - "Walmart chargeback supplier"
+  - "Walmart supplier compliance"
+  - "SQEP fine deduction"
+
+# --- Import Keywords ---
+import_keywords:
+  fragrance: [aroma chemical, essential oil, fragrance compound]
+  flavor: [flavor extract, natural flavor, food flavoring]
+  food: [food ingredient, food additive, food product]
+  pharma: [pharmaceutical ingredient, API bulk drug, excipient]
+  nutraceutical: [dietary supplement ingredient, herbal extract, vitamin raw material]
+
+# --- Search API ---
+search_api:
+  provider: "serpapi"
+  plan_limit: 1000
+
+# --- Apollo.io ---
+apollo:
+  enabled: true
+  per_page: 25
+  max_pages_per_search: 4
+  plan_limit: 30000
+
+# --- Hunter.io ---
+hunter:
+  enabled: true
+  max_searches_per_run: 100
+  max_verifications_per_run: 50
+  search_credit_limit: 1000
+  verification_credit_limit: 1000
+
+# --- Lead Scoring ---
+scoring:
+  signal_density:
+    1_source: 5
+    2_sources: 15
+    3_sources: 25
+    4_plus_sources: 35
+  compliance:
+    walmart_supplier: 10
+    sqep_mentioned: 10
+    otif_mentioned: 10
+    compliance_pain: 10
+  geography:
+    in_target_state: 15
+    other: 0
+  enrichment:
+    verified_email_logistics_title: 15
+    email_non_logistics_title: 10
+    email_pattern_found: 5
+    contact_name_no_email: 3
+    website_only: 0
+  vertical_multipliers:
+    food: 1.3
+    fragrance: 1.2
+    nutraceutical: 1.15
+    pharma: 1.1
+    flavor: 1.0
+    unknown: 0.8
+  tiers:
+    hot: 70
+    warm: 45
+    nurture: 25
+
+# --- Database ---
+database:
+  path: "./prospects.db"
+  statuses: [NEW, QUEUED, CONTACTED, ENGAGED, QUOTED, WON, LOST, PARKED]
+
+# --- Checkpoints ---
+checkpoints:
+  directory: "./checkpoints"
+  keep_on_success: false
+
+# --- Output ---
+output:
+  directory: "./output"
+  filename_prefix: "prospects"
+  formats: [xlsx, csv]

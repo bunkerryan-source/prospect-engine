@@ -1,0 +1,6 @@
+pyyaml
+requests
+openpyxl
+python-dotenv
+thefuzz[speedup]
+pytest
